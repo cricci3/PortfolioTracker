@@ -1,16 +1,17 @@
 """Investment Tracker.
 
-Uso (con uv):
-    uv run investment-tracker                                 -> avvia la dashboard locale
-    uv run investment-tracker <TICKER_O_ISIN> <IMPORTO> <DATA> -> calcolo da riga di comando
+Usage (with uv):
+    uv run investment-tracker                                   -> start the local dashboard
+    uv run investment-tracker --demo                            -> dashboard with fake prices
+    uv run investment-tracker <TICKER_OR_ISIN> <AMOUNT> <DATE>  -> one-off CLI calculation
 
-Uso (senza uv):
+Usage (without uv):
     python main.py                    (dashboard)
-    python main.py <TICKER_O_ISIN> <IMPORTO> <DATA>
+    python main.py <TICKER_OR_ISIN> <AMOUNT> <DATE>
 
-Esempi:
+Examples:
     uv run investment-tracker IE00BK5BQT80 1000 2024-01-15
-    uv run investment-tracker VWCE.DE 1000 15/01/2024 --ticker VWCE.DE
+    uv run investment-tracker VWCE.DE 1000 15/01/2024
 """
 
 from __future__ import annotations

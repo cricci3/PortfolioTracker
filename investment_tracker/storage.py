@@ -1,13 +1,13 @@
-"""Persistenza locale del portafoglio (file JSON fuori dalla cartella del progetto).
+"""Local persistence of the portfolio (a JSON file kept outside the project folder).
 
-Il file vive in una cartella dati dell'utente, NON nel repository:
+The file lives in a per-user data folder, NOT in the repository:
   - Windows: %APPDATA%\\InvestmentTracker\\portfolio.json
   - macOS:   ~/Library/Application Support/InvestmentTracker/portfolio.json
   - Linux:   ~/.local/share/investment-tracker/portfolio.json
 
-Si può spostare impostando la variabile d'ambiente INVESTMENT_TRACKER_DATA_DIR.
-Tenerlo fuori dal progetto evita che finisca in git o che venga letto da strumenti
-(Claude Code incluso) che lavorano sulla cartella del codice.
+Override the location with the INVESTMENT_TRACKER_DATA_DIR environment variable.
+Keeping it outside the project prevents it from ending up in git or being read by
+tools that work on the code folder (Claude Code included).
 """
 
 from __future__ import annotations
@@ -40,23 +40,23 @@ def data_dir() -> Path:
 
 @dataclass
 class Contribution:
-    """Un versamento su un asset (acquisto iniziale o versamento PAC)."""
+    """A single deposit into an asset (initial purchase or a recurring plan instalment)."""
 
     id: str
     date: str  # ISO YYYY-MM-DD
-    amount: float  # nella valuta base del portafoglio (es. EUR)
-    price: float | None = None  # prezzo unitario reale, in valuta dello strumento (opzionale)
+    amount: float  # in the portfolio base currency (e.g. EUR)
+    price: float | None = None  # actual unit price paid, in the instrument currency (optional)
     note: str = ""
 
 
 @dataclass
 class Asset:
     id: str
-    ticker: str  # ticker Yahoo Finance risolto (es. VWCE.DE)
+    ticker: str  # resolved Yahoo Finance ticker (e.g. VWCE.DE)
     name: str = ""
     exchange: str = ""
-    currency: str = ""  # valuta di quotazione dello strumento (da Yahoo)
-    input_symbol: str = ""  # ciò che l'utente ha digitato (ticker o ISIN)
+    currency: str = ""  # instrument quote currency (from Yahoo)
+    input_symbol: str = ""  # what the user typed (ticker or ISIN)
     contributions: list[Contribution] = field(default_factory=list)
 
     @classmethod
@@ -90,7 +90,7 @@ def new_id() -> str:
 
 
 class Store:
-    """Lettura/scrittura thread-safe e atomica del file del portafoglio."""
+    """Thread-safe, atomic read/write of the portfolio file."""
 
     def __init__(self, path: Path | None = None):
         self.path = path or (data_dir() / DATA_FILENAME)
@@ -112,14 +112,17 @@ class Store:
             payload = {"schema": SCHEMA_VERSION, **asdict(portfolio)}
             tmp = self.path.with_suffix(".json.tmp")
             tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-            os.replace(tmp, self.path)  # scrittura atomica: niente file corrotti
+            os.replace(tmp, self.path)  # atomic write: never leaves a half-written file
 
 
 def validate_contribution(date_str: str, amount: float, price: float | None) -> None:
-    d = date.fromisoformat(date_str)
+    try:
+        d = date.fromisoformat(date_str)
+    except ValueError:
+        raise ValueError(f"Invalid date: '{date_str}'.") from None
     if d > date.today():
-        raise ValueError("La data non può essere nel futuro.")
+        raise ValueError("The date cannot be in the future.")
     if amount <= 0:
-        raise ValueError("L'importo deve essere maggiore di zero.")
+        raise ValueError("The amount must be greater than zero.")
     if price is not None and price <= 0:
-        raise ValueError("Il prezzo unitario deve essere maggiore di zero.")
+        raise ValueError("The unit price must be greater than zero.")

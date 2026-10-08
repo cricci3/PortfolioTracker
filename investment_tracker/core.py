@@ -1,4 +1,4 @@
-"""Logica di calcolo del rendimento di un investimento, basata su dati Yahoo Finance."""
+"""Single-investment return calculation and ISIN -> ticker resolution (Yahoo Finance)."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ ISIN_RE = re.compile(r"^[A-Z]{2}[A-Z0-9]{9}[0-9]$")
 
 
 class TickerResolutionError(Exception):
-    """Sollevata quando un ISIN non produce un ticker univoco senza scelta dell'utente."""
+    """Raised when an ISIN doesn't map to a single ticker without the user choosing one."""
 
     def __init__(self, message: str, candidates: list["TickerCandidate"] | None = None):
         super().__init__(message)
@@ -22,11 +22,11 @@ class TickerResolutionError(Exception):
 
 
 class NoDataError(Exception):
-    """Sollevata quando Yahoo Finance non restituisce dati di prezzo utilizzabili."""
+    """Raised when Yahoo Finance returns no usable price data."""
 
 
 class NetworkError(Exception):
-    """Sollevata quando non è possibile contattare Yahoo Finance (connessione/DNS)."""
+    """Raised when Yahoo Finance can't be reached (connection/DNS)."""
 
 
 @dataclass
@@ -54,7 +54,7 @@ class InvestmentResult:
     current_value: float
     gain: float
     return_pct: float
-    history: pd.DataFrame  # colonna 'Close', indicizzata per data
+    history: pd.DataFrame  # 'Close' column, indexed by date
 
 
 def is_isin(value: str) -> bool:
@@ -62,7 +62,7 @@ def is_isin(value: str) -> bool:
 
 
 def search_ticker_by_isin(isin: str) -> list[TickerCandidate]:
-    """Interroga l'endpoint di ricerca di Yahoo Finance per risolvere un ISIN in ticker."""
+    """Query Yahoo Finance's search endpoint (works for ISINs, tickers and names)."""
     url = "https://query2.finance.yahoo.com/v1/finance/search"
     params = {"q": isin, "quotesCount": 10, "newsCount": 0}
     headers = {"User-Agent": "Mozilla/5.0 (compatible; investment-tracker/1.0)"}
@@ -72,9 +72,9 @@ def search_ticker_by_isin(isin: str) -> list[TickerCandidate]:
         data = resp.json()
     except requests.exceptions.RequestException as e:
         raise NetworkError(
-            "Impossibile contattare Yahoo Finance per risolvere l'ISIN. "
-            "Controlla la connessione Internet (Wi-Fi/VPN/firewall) e riprova. "
-            f"Dettaglio: {e}"
+            "Could not reach Yahoo Finance to look up the symbol. "
+            "Check your Internet connection (Wi-Fi/VPN/firewall) and try again. "
+            f"Details: {e}"
         ) from e
     quotes = data.get("quotes", [])
     candidates = [
@@ -90,10 +90,10 @@ def search_ticker_by_isin(isin: str) -> list[TickerCandidate]:
 
 
 def resolve_ticker(symbol_or_isin: str, chosen_symbol: str | None = None) -> str:
-    """Risolve l'input dell'utente (ticker o ISIN) in un ticker Yahoo Finance valido.
+    """Resolve user input (ticker or ISIN) into a valid Yahoo Finance ticker.
 
-    Se è un ISIN con più candidati e non è stato specificato `chosen_symbol`,
-    solleva TickerResolutionError con la lista dei candidati da far scegliere all'utente.
+    If it's an ISIN with several candidates and `chosen_symbol` isn't given, raises
+    TickerResolutionError with the candidate list so the user can pick one.
     """
     value = symbol_or_isin.strip().upper()
     if not is_isin(value):
@@ -105,14 +105,14 @@ def resolve_ticker(symbol_or_isin: str, chosen_symbol: str | None = None) -> str
     candidates = search_ticker_by_isin(value)
     if not candidates:
         raise TickerResolutionError(
-            f"Nessun ticker Yahoo Finance trovato per l'ISIN {value}. "
-            "Prova a inserire direttamente il ticker Yahoo (es. VWCE.DE)."
+            f"No Yahoo Finance ticker found for ISIN {value}. "
+            "Try entering the Yahoo ticker directly (e.g. VWCE.DE)."
         )
     if len(candidates) == 1:
         return candidates[0].symbol
     raise TickerResolutionError(
-        f"L'ISIN {value} corrisponde a più strumenti quotati su borse diverse. "
-        "Scegline uno.",
+        f"ISIN {value} matches several instruments listed on different exchanges. "
+        "Pick one.",
         candidates=candidates,
     )
 
@@ -124,34 +124,34 @@ def compute_investment_return(
     chosen_symbol: str | None = None,
 ) -> InvestmentResult:
     if amount <= 0:
-        raise ValueError("L'importo investito deve essere maggiore di zero.")
+        raise ValueError("The invested amount must be greater than zero.")
     if start_date > date.today():
-        raise ValueError("La data di inizio investimento non può essere nel futuro.")
+        raise ValueError("The start date cannot be in the future.")
 
     ticker = resolve_ticker(symbol_or_isin, chosen_symbol=chosen_symbol)
 
     tk = yf.Ticker(ticker)
-    # end esclusivo in yfinance: aggiungo un giorno per includere oggi
+    # yfinance's `end` is exclusive: add a day to include today
     end = date.today() + timedelta(days=1)
     try:
         hist = tk.history(start=start_date, end=end, auto_adjust=False)
     except Exception as e:
         raise NetworkError(
-            "Impossibile recuperare i dati storici da Yahoo Finance. "
-            "Controlla la connessione Internet (Wi-Fi/VPN/firewall) e riprova. "
-            f"Dettaglio: {e}"
+            "Could not fetch price history from Yahoo Finance. "
+            "Check your Internet connection (Wi-Fi/VPN/firewall) and try again. "
+            f"Details: {e}"
         ) from e
 
     if hist.empty:
         raise NoDataError(
-            f"Nessun dato storico trovato per il ticker '{ticker}' a partire dal {start_date}. "
-            "Controlla il ticker/ISIN e la data (potrebbe precedere la quotazione dello strumento)."
+            f"No price history found for ticker '{ticker}' since {start_date}. "
+            "Check the ticker/ISIN and the date (it may predate the instrument's listing)."
         )
 
     hist = hist.sort_index()
     close = hist["Close"].dropna()
     if close.empty:
-        raise NoDataError(f"Dati di prezzo vuoti per '{ticker}'.")
+        raise NoDataError(f"Empty price data for '{ticker}'.")
 
     start_price = float(close.iloc[0])
     start_actual = close.index[0].date()
@@ -189,11 +189,11 @@ def compute_investment_return(
 
 
 def parse_date(value: str) -> date:
-    """Accetta date nei formati YYYY-MM-DD o DD/MM/YYYY."""
+    """Accept dates as YYYY-MM-DD or DD/MM/YYYY."""
     value = value.strip()
     for fmt in ("%Y-%m-%d", "%d/%m/%Y"):
         try:
             return datetime.strptime(value, fmt).date()
         except ValueError:
             continue
-    raise ValueError(f"Formato data non riconosciuto: '{value}'. Usa YYYY-MM-DD o DD/MM/YYYY.")
+    raise ValueError(f"Unrecognised date format: '{value}'. Use YYYY-MM-DD or DD/MM/YYYY.")

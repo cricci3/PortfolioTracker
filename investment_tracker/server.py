@@ -1,11 +1,11 @@
-"""Server web locale della dashboard (solo libreria standard).
+"""Local web server for the dashboard (standard library only).
 
-Sicurezza / privacy:
-- ascolta SOLO su 127.0.0.1: non è raggiungibile da altri dispositivi della rete;
-- rifiuta richieste con Host diverso da localhost (protezione DNS-rebinding);
-- ogni chiamata /api richiede un token casuale generato a ogni avvio e inserito nella
-  pagina: un sito esterno aperto nel browser non può leggere né modificare i dati;
-- nessuna risorsa esterna (CDN, font, analytics): la pagina è interamente servita da qui.
+Security / privacy:
+- listens ONLY on 127.0.0.1, so it can't be reached from other devices on the network;
+- rejects requests whose Host header isn't localhost (DNS-rebinding protection);
+- every /api call requires a random token generated at each start and injected into the
+  page: an external website open in the browser can neither read nor change the data;
+- no external resources (CDNs, fonts, analytics): the page is served entirely from here.
 """
 
 from __future__ import annotations
@@ -17,7 +17,6 @@ import secrets
 import threading
 import webbrowser
 from datetime import date
-from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -30,6 +29,7 @@ from .storage import Asset, Contribution, Store, new_id, validate_contribution
 WEB_DIR = Path(__file__).parent / "web"
 TOKEN = secrets.token_urlsafe(24)
 STORE = Store()
+TICKER_RE = re.compile(r"[A-Z0-9.\-=^]{1,20}")
 
 
 class ApiError(Exception):
@@ -41,29 +41,41 @@ class ApiError(Exception):
 def _num(value, field: str, required: bool = True) -> float | None:
     if value in (None, ""):
         if required:
-            raise ApiError(400, f"Campo '{field}' obbligatorio.")
+            raise ApiError(400, f"'{field}' is required.")
         return None
     try:
         return float(str(value).replace(",", "."))
     except ValueError:
-        raise ApiError(400, f"'{value}' non è un numero valido ({field}).") from None
+        raise ApiError(400, f"'{value}' is not a valid number ({field}).") from None
 
 
-def _contribution_from(body: dict) -> Contribution:
+def _contribution_from(body: dict, keep_id: str | None = None) -> Contribution:
     d = str(body.get("date") or date.today().isoformat())
-    amount = _num(body.get("amount"), "importo")
-    price = _num(body.get("price"), "prezzo", required=False)
+    amount = _num(body.get("amount"), "amount")
+    price = _num(body.get("price"), "price", required=False)
     try:
         validate_contribution(d, amount, price)
     except ValueError as e:
         raise ApiError(400, str(e)) from None
-    return Contribution(id=new_id(), date=d, amount=amount, price=price, note=str(body.get("note", ""))[:200])
+    return Contribution(
+        id=keep_id or new_id(), date=d, amount=amount, price=price, note=str(body.get("note") or "")[:200]
+    )
+
+
+def _check_ticker(ticker: str, since: date) -> market.InstrumentMeta:
+    """Make sure Yahoo knows the ticker and has prices since `since`."""
+    try:
+        meta = market.instrument_meta(ticker)
+        market.close_history(ticker, since)
+    except Exception as e:
+        raise ApiError(400, f"Could not verify '{ticker}' on Yahoo Finance: {e}") from None
+    return meta
 
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "InvestmentTracker"
 
-    def log_message(self, format, *args):  # niente log delle richieste in console
+    def log_message(self, format, *args):  # don't log requests to the console
         pass
 
     # ------------------------------------------------------------------ helpers
@@ -92,13 +104,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def _body(self) -> dict:
         n = int(self.headers.get("Content-Length") or 0)
-        if n > 100_000:
-            raise ApiError(413, "Richiesta troppo grande.")
+        if n > 200_000:
+            raise ApiError(413, "Request too large.")
         raw = self.rfile.read(n) if n else b"{}"
         try:
-            return json.loads(raw or b"{}")
+            data = json.loads(raw or b"{}")
         except json.JSONDecodeError:
-            raise ApiError(400, "JSON non valido.") from None
+            raise ApiError(400, "Invalid JSON.") from None
+        if not isinstance(data, dict):
+            raise ApiError(400, "Invalid JSON.")
+        return data
 
     # ----------------------------------------------------------------- dispatch
 
@@ -111,16 +126,16 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path.startswith("/api/"):
                 if not secrets.compare_digest(self.headers.get("X-Tracker-Token", ""), TOKEN):
-                    raise ApiError(403, "Token non valido: ricarica la pagina.")
+                    raise ApiError(403, "Invalid token: reload the page.")
                 self._api(method, path, parse_qs(url.query))
             elif method == "GET":
                 self._static(path)
             else:
-                raise ApiError(405, "Metodo non consentito.")
+                raise ApiError(405, "Method not allowed.")
         except ApiError as e:
             self._json(e.status, {"error": str(e)})
-        except Exception as e:  # pragma: no cover - errori imprevisti
-            self._json(500, {"error": f"Errore imprevisto: {e}"})
+        except Exception as e:  # pragma: no cover - unexpected errors
+            self._json(500, {"error": f"Unexpected error: {e}"})
 
     def do_GET(self):
         self._handle("GET")
@@ -128,11 +143,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         self._handle("POST")
 
-    def do_DELETE(self):
-        self._handle("DELETE")
-
     def do_PUT(self):
         self._handle("PUT")
+
+    def do_DELETE(self):
+        self._handle("DELETE")
 
     # ------------------------------------------------------------------- static
 
@@ -142,8 +157,7 @@ class Handler(BaseHTTPRequestHandler):
             html = html.replace("__TRACKER_TOKEN__", TOKEN)
             self._send(200, html.encode(), "text/html; charset=utf-8")
             return
-        name = path.lstrip("/")
-        target = (WEB_DIR / name).resolve()
+        target = (WEB_DIR / path.lstrip("/")).resolve()
         if WEB_DIR.resolve() not in target.parents or not target.is_file():
             self._send(404, b"Not found", "text/plain")
             return
@@ -155,7 +169,7 @@ class Handler(BaseHTTPRequestHandler):
     # ---------------------------------------------------------------------- api
 
     def _api(self, method: str, path: str, query: dict) -> None:
-        parts = [p for p in path.split("/") if p][1:]  # senza "api"
+        parts = [p for p in path.split("/") if p][1:]  # drop the leading "api"
 
         if method == "GET" and parts == ["portfolio"]:
             refresh = query.get("refresh", ["0"])[0] == "1"
@@ -164,7 +178,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if method == "GET" and parts == ["search"]:
             q = query.get("q", [""])[0].strip()
-            if len(q) < 1:
+            if not q:
                 self._json(200, {"results": []})
                 return
             try:
@@ -175,34 +189,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if method == "POST" and parts == ["assets"]:
-            body = self._body()
-            ticker = str(body.get("ticker", "")).strip().upper()
-            if not re.fullmatch(r"[A-Z0-9.\-=^]{1,20}", ticker):
-                raise ApiError(400, "Ticker non valido.")
-            contrib = _contribution_from(body)
-            pf = STORE.load()
-            existing = next((a for a in pf.assets if a.ticker == ticker), None)
-            if existing:
-                existing.contributions.append(contrib)
-            else:
-                try:
-                    meta = market.instrument_meta(ticker)
-                    market.close_history(ticker, date.fromisoformat(contrib.date))
-                except Exception as e:
-                    raise ApiError(400, f"Impossibile verificare '{ticker}' su Yahoo Finance: {e}") from None
-                pf.assets.append(
-                    Asset(
-                        id=new_id(),
-                        ticker=ticker,
-                        name=str(body.get("name") or meta.name)[:120],
-                        exchange=str(body.get("exchange") or meta.exchange)[:40],
-                        currency=meta.currency,
-                        input_symbol=str(body.get("input_symbol") or ticker)[:20],
-                        contributions=[contrib],
-                    )
-                )
-            STORE.save(pf)
-            self._json(201, {"ok": True, "merged": bool(existing)})
+            self._create_asset(self._body())
             return
 
         if len(parts) >= 2 and parts[0] == "assets":
@@ -210,21 +197,19 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 asset = pf.find(parts[1])
             except KeyError:
-                raise ApiError(404, "Asset non trovato.") from None
+                raise ApiError(404, "Asset not found.") from None
 
-            if method == "DELETE" and len(parts) == 2:
-                pf.assets.remove(asset)
-                STORE.save(pf)
-                self._json(200, {"ok": True})
-                return
-
-            if method == "PUT" and len(parts) == 2:  # rinomina
-                body = self._body()
-                if body.get("name"):
-                    asset.name = str(body["name"])[:120]
-                STORE.save(pf)
-                self._json(200, {"ok": True})
-                return
+            if len(parts) == 2:
+                if method == "PUT":
+                    self._update_asset(pf, asset, self._body())
+                    STORE.save(pf)
+                    self._json(200, {"ok": True})
+                    return
+                if method == "DELETE":
+                    pf.assets.remove(asset)
+                    STORE.save(pf)
+                    self._json(200, {"ok": True})
+                    return
 
             if parts[2:3] == ["contributions"]:
                 if method == "POST" and len(parts) == 3:
@@ -232,18 +217,82 @@ class Handler(BaseHTTPRequestHandler):
                     STORE.save(pf)
                     self._json(201, {"ok": True})
                     return
-                if method == "DELETE" and len(parts) == 4:
-                    before = len(asset.contributions)
-                    asset.contributions = [c for c in asset.contributions if c.id != parts[3]]
-                    if len(asset.contributions) == before:
-                        raise ApiError(404, "Versamento non trovato.")
-                    if not asset.contributions:
-                        pf.assets.remove(asset)
-                    STORE.save(pf)
-                    self._json(200, {"ok": True})
-                    return
+                if len(parts) == 4:
+                    idx = next((i for i, c in enumerate(asset.contributions) if c.id == parts[3]), None)
+                    if idx is None:
+                        raise ApiError(404, "Contribution not found.")
+                    if method == "PUT":
+                        asset.contributions[idx] = _contribution_from(self._body(), keep_id=parts[3])
+                        STORE.save(pf)
+                        self._json(200, {"ok": True})
+                        return
+                    if method == "DELETE":
+                        del asset.contributions[idx]
+                        if not asset.contributions:
+                            pf.assets.remove(asset)
+                        STORE.save(pf)
+                        self._json(200, {"ok": True})
+                        return
 
-        raise ApiError(404, "Endpoint non trovato.")
+        raise ApiError(404, "Endpoint not found.")
+
+    def _create_asset(self, body: dict) -> None:
+        ticker = str(body.get("ticker", "")).strip().upper()
+        if not TICKER_RE.fullmatch(ticker):
+            raise ApiError(400, "Invalid ticker.")
+        contrib = _contribution_from(body)
+        pf = STORE.load()
+        existing = next((a for a in pf.assets if a.ticker == ticker), None)
+        if existing:
+            existing.contributions.append(contrib)
+        else:
+            meta = _check_ticker(ticker, date.fromisoformat(contrib.date))
+            pf.assets.append(
+                Asset(
+                    id=new_id(),
+                    ticker=ticker,
+                    name=str(body.get("name") or meta.name)[:120],
+                    exchange=str(body.get("exchange") or meta.exchange)[:40],
+                    currency=meta.currency,
+                    input_symbol=str(body.get("input_symbol") or ticker)[:20],
+                    contributions=[contrib],
+                )
+            )
+        STORE.save(pf)
+        self._json(201, {"ok": True, "merged": bool(existing)})
+
+    def _update_asset(self, pf, asset: Asset, body: dict) -> None:
+        """Edit name, ticker and/or the whole contribution list in one atomic update."""
+        contribs = asset.contributions
+        if "contributions" in body:
+            rows = body["contributions"]
+            if not isinstance(rows, list) or not rows:
+                raise ApiError(400, "An asset needs at least one contribution.")
+            known = {c.id for c in asset.contributions}
+            contribs = [
+                _contribution_from(r, keep_id=r.get("id") if r.get("id") in known else None)
+                for r in rows
+                if isinstance(r, dict)
+            ]
+
+        if "ticker" in body:
+            ticker = str(body.get("ticker") or "").strip().upper()
+            if not TICKER_RE.fullmatch(ticker):
+                raise ApiError(400, "Invalid ticker.")
+            if ticker != asset.ticker:
+                if any(a.ticker == ticker and a.id != asset.id for a in pf.assets):
+                    raise ApiError(409, f"{ticker} is already in the portfolio.")
+                first = min(date.fromisoformat(c.date) for c in contribs)
+                meta = _check_ticker(ticker, first)
+                asset.ticker = ticker
+                asset.currency = meta.currency
+                asset.exchange = meta.exchange
+                if not body.get("name"):
+                    asset.name = meta.name
+
+        if body.get("name"):
+            asset.name = str(body["name"]).strip()[:120]
+        asset.contributions = contribs
 
 
 def serve(port: int = 8765, open_browser: bool = True) -> None:
@@ -256,19 +305,19 @@ def serve(port: int = 8765, open_browser: bool = True) -> None:
         except OSError:
             continue
     if httpd is None:
-        raise SystemExit("Nessuna porta libera trovata tra 8765 e 8784.")
+        raise SystemExit(f"No free port found between {port} and {port + 19}.")
 
     url = f"http://127.0.0.1:{port}/"
-    print(f"Investment Tracker in esecuzione su {url}")
-    print(f"Dati: {STORE.path}")
+    print(f"Investment Tracker running at {url}")
+    print(f"Data: {STORE.path}")
     if market.demo_mode():
-        print("Modalità DEMO: prezzi sintetici, nessuna connessione a Yahoo.")
-    print("Premi Ctrl+C per chiudere.")
+        print("DEMO mode: synthetic prices, no connection to Yahoo.")
+    print("Press Ctrl+C to stop.")
     if open_browser:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
-        print("\nChiuso.")
+        print("\nStopped.")
     finally:
         httpd.server_close()

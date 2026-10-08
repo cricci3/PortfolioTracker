@@ -1,4 +1,4 @@
-"""Interfaccia a riga di comando per il calcolo del rendimento di un investimento."""
+"""Command-line interface for a one-off return calculation."""
 
 from __future__ import annotations
 
@@ -18,24 +18,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="investment-tracker",
         description=(
-            "Calcola il rendimento attuale di un investimento (ETF/azione) "
-            "a partire da un importo e una data di acquisto, usando i dati di Yahoo Finance."
+            "Compute the current return of an investment (ETF/stock) from an amount "
+            "and a purchase date, using Yahoo Finance data."
         ),
     )
     parser.add_argument(
         "symbol",
-        help="Ticker Yahoo Finance (es. VWCE.DE) oppure ISIN (es. IE00BK5BQT80)",
+        help="Yahoo Finance ticker (e.g. VWCE.DE) or ISIN (e.g. IE00BK5BQT80)",
     )
-    parser.add_argument("amount", type=float, help="Importo investito (es. 1000)")
+    parser.add_argument("amount", type=float, help="Invested amount (e.g. 1000)")
     parser.add_argument(
         "date",
-        help="Data di acquisto, formato YYYY-MM-DD o DD/MM/YYYY (es. 2024-01-15)",
+        help="Purchase date, YYYY-MM-DD or DD/MM/YYYY (e.g. 2024-01-15)",
     )
     parser.add_argument(
         "--ticker",
         dest="forced_ticker",
         default=None,
-        help="Forza un ticker Yahoo specifico se l'ISIN è ambiguo",
+        help="Force a specific Yahoo ticker when the ISIN is ambiguous",
     )
     return parser
 
@@ -47,7 +47,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         start_date = parse_date(args.date)
     except ValueError as e:
-        print(f"Errore: {e}", file=sys.stderr)
+        print(f"Error: {e}", file=sys.stderr)
         return 1
 
     try:
@@ -55,39 +55,33 @@ def main(argv: list[str] | None = None) -> int:
             args.symbol, args.amount, start_date, chosen_symbol=args.forced_ticker
         )
     except TickerResolutionError as e:
-        print(f"Errore: {e}", file=sys.stderr)
+        print(f"Error: {e}", file=sys.stderr)
         if e.candidates:
-            print("\nCandidati trovati (usa --ticker <SIMBOLO> per sceglierne uno):", file=sys.stderr)
+            print("\nCandidates found (use --ticker <SYMBOL> to pick one):", file=sys.stderr)
             for c in e.candidates:
                 print(f"  {c}", file=sys.stderr)
         return 1
-    except NoDataError as e:
-        print(f"Errore: {e}", file=sys.stderr)
-        return 1
-    except NetworkError as e:
-        print(f"Errore: {e}", file=sys.stderr)
-        return 1
-    except ValueError as e:
-        print(f"Errore: {e}", file=sys.stderr)
+    except (NoDataError, NetworkError, ValueError) as e:
+        print(f"Error: {e}", file=sys.stderr)
         return 1
     except Exception as e:
-        print(f"Errore imprevisto: {e}", file=sys.stderr)
+        print(f"Unexpected error: {e}", file=sys.stderr)
         return 1
 
     sign = "+" if result.gain >= 0 else ""
     cur = result.currency or ""
-    print(f"Strumento:         {result.input_symbol} -> {result.resolved_ticker}")
-    print(f"Data richiesta:    {result.start_date_requested}")
-    print(f"Data di acquisto effettiva (primo giorno di borsa disponibile): {result.start_date_actual}")
-    print(f"Prezzo di acquisto:  {result.start_price:.4f} {cur}")
-    print(f"Data valorizzazione: {result.end_date_actual}")
-    print(f"Prezzo attuale:      {result.end_price:.4f} {cur}")
-    print(f"Quote acquistate:    {result.shares:.6f}")
+    print(f"Instrument:        {result.input_symbol} -> {result.resolved_ticker}")
+    print(f"Requested date:    {result.start_date_requested}")
+    print(f"Actual purchase date (first available trading day): {result.start_date_actual}")
+    print(f"Purchase price:    {result.start_price:.4f} {cur}")
+    print(f"Valuation date:    {result.end_date_actual}")
+    print(f"Current price:     {result.end_price:.4f} {cur}")
+    print(f"Shares bought:     {result.shares:.6f}")
     print("-" * 50)
-    print(f"Importo investito:   {result.amount:,.2f}")
-    print(f"Rendimento:          {sign}{result.return_pct:.2f}%")
-    print(f"Guadagno/Perdita:    {sign}{result.gain:,.2f}")
-    print(f"Valore attuale:      {result.current_value:,.2f}")
+    print(f"Amount invested:   {result.amount:,.2f}")
+    print(f"Return:            {sign}{result.return_pct:.2f}%")
+    print(f"Gain/Loss:         {sign}{result.gain:,.2f}")
+    print(f"Current value:     {result.current_value:,.2f}")
     return 0
 
 

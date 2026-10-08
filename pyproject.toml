@@ -1,14 +1,14 @@
 [project]
 name = "investment-tracker"
-version = "0.2.0"
-description = "Dashboard locale per seguire il rendimento dei propri investimenti con i dati di Yahoo Finance."
+version = "0.3.0"
+description = "Local dashboard to track your investment returns with Yahoo Finance data."
 requires-python = ">=3.10"
 dependencies = [
     "yfinance>=0.2.40",
     "pandas>=2.0",
     "requests>=2.31",
-    # Pinnato: numpy >=2.5 viene bloccato da AppLocker/WDAC su questa macchina
-    # (DLL "bloccata da un criterio di controllo dell'applicazione").
+    # Pinned: numpy >=2.5 is blocked by AppLocker/WDAC on this machine
+    # (DLL "blocked by an application control policy").
     "numpy==2.1.3",
 ]
 

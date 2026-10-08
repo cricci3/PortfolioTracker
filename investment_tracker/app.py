@@ -1,9 +1,9 @@
-"""Entry point unico.
+"""Single entry point.
 
-    investment-tracker                      -> avvia la dashboard locale nel browser
-    investment-tracker --demo               -> dashboard con prezzi sintetici (offline)
+    investment-tracker                      -> start the local dashboard in the browser
+    investment-tracker --demo               -> dashboard with synthetic prices (offline)
     investment-tracker --port 9000 --no-browser
-    investment-tracker <TICKER_O_ISIN> <IMPORTO> <DATA>   -> calcolo singolo da CLI
+    investment-tracker <TICKER_OR_ISIN> <AMOUNT> <DATE>   -> one-off calculation from the CLI
 """
 
 from __future__ import annotations
@@ -16,14 +16,14 @@ DASHBOARD_FLAGS = {"--port", "--no-browser", "--demo", "-h", "--help"}
 
 
 def _dashboard(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(prog="investment-tracker", description="Dashboard locale degli investimenti.")
-    parser.add_argument("--port", type=int, default=8765, help="porta locale (default 8765)")
-    parser.add_argument("--no-browser", action="store_true", help="non aprire il browser automaticamente")
-    parser.add_argument("--demo", action="store_true", help="prezzi sintetici, nessuna connessione a Yahoo")
+    parser = argparse.ArgumentParser(prog="investment-tracker", description="Local investment dashboard.")
+    parser.add_argument("--port", type=int, default=8765, help="local port (default 8765)")
+    parser.add_argument("--no-browser", action="store_true", help="don't open the browser automatically")
+    parser.add_argument("--demo", action="store_true", help="synthetic prices, no connection to Yahoo")
     args = parser.parse_args(argv)
     if args.demo:
         os.environ["INVESTMENT_TRACKER_DEMO"] = "1"
-        # in demo i dati vanno in un file separato, per non sporcare il portafoglio reale
+        # demo data goes to a separate file so the real portfolio is never touched
         os.environ.setdefault(
             "INVESTMENT_TRACKER_DATA_DIR",
             os.path.join(os.path.expanduser("~"), ".investment-tracker-demo"),

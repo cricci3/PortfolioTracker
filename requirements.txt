@@ -1,5 +1,5 @@
 yfinance>=0.2.40
 pandas>=2.0
 requests>=2.31
-# Pinnato: numpy >=2.5 viene bloccato da AppLocker/WDAC su questa macchina
+# Pinned: numpy >=2.5 is blocked by AppLocker/WDAC on this machine
 numpy==2.1.3

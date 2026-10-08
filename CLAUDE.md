@@ -1,50 +1,52 @@
-# Investment Tracker — note per Claude Code
+# Investment Tracker — notes for Claude Code
 
-App Python personale che calcola il rendimento dei miei investimenti con i prezzi di
-Yahoo Finance. Gira **solo in locale**: dashboard web servita da Python su `127.0.0.1`.
+A personal Python app that tracks the returns of my investments using Yahoo Finance
+prices. It runs **locally only**: a web dashboard served by Python on `127.0.0.1`.
 
-## Regola n.1: privacy dei dati
+## Rule #1: data privacy
 
-- I dati reali del portafoglio (importi, date, quote) vivono **fuori dal repo**, in
-  `%APPDATA%\InvestmentTracker\portfolio.json` (o in `INVESTMENT_TRACKER_DATA_DIR`).
-- **Non leggere, aprire, stampare, copiare o cercare quel file né la sua cartella**, nemmeno
-  per fare debug, e non avviare la dashboard reale per "vedere i dati". Le regole di blocco
-  sono in `.claude/settings.json`, ma vale anche come istruzione.
-- Per sviluppare e testare usa SEMPRE la modalità demo: `uv run investment-tracker --demo`
-  (prezzi sintetici, nessuna rete, dati in `~/.investment-tracker-demo/`), oppure crea un
-  `Store` in una cartella temporanea dentro i test.
-- Non aggiungere dipendenze che inviano dati all'esterno: niente CDN, Google Fonts, analytics,
-  telemetria, servizi cloud. Il frontend deve funzionare offline (a parte i prezzi da Yahoo).
-  Verso Yahoo vanno solo ticker e date di inizio storico, mai importi.
-- Il server deve restare legato a `127.0.0.1` e mantenere il controllo dell'Host header e del
-  token `X-Tracker-Token`.
+- The real portfolio data (amounts, dates, shares) lives **outside the repo**, in
+  `%APPDATA%\InvestmentTracker\portfolio.json` (or `INVESTMENT_TRACKER_DATA_DIR`).
+- **Never read, open, print, copy or search that file or its folder**, not even for
+  debugging, and don't start the real dashboard "to look at the data". The block rules are
+  in `.claude/settings.json`, but treat this as an instruction too.
+- To develop and test ALWAYS use demo mode: `uv run investment-tracker --demo`
+  (synthetic prices, no network, data in `~/.investment-tracker-demo/`), or create a
+  `Store` in a temporary folder inside tests.
+- Don't add dependencies that send data elsewhere: no CDNs, Google Fonts, analytics,
+  telemetry or cloud services. The frontend must work offline (apart from Yahoo prices).
+  Yahoo only receives tickers and history start dates, never amounts.
+- The server must stay bound to `127.0.0.1` and keep the Host-header check and the
+  `X-Tracker-Token` token.
 
-## Comandi
+## Commands
 
 ```bash
-uv sync                                   # installa dipendenze
-uv run investment-tracker --demo          # dashboard demo (usa questa per sviluppare)
-uv run investment-tracker                 # dashboard reale (la lancia l'utente, non Claude)
-uv run investment-tracker VWCE.DE 1000 2024-01-15   # calcolo singolo da CLI
+uv sync                                   # install dependencies
+uv run investment-tracker --demo          # demo dashboard (use this for development)
+uv run investment-tracker                 # real dashboard (the user runs this, not Claude)
+uv run investment-tracker VWCE.DE 1000 2024-01-15   # one-off calculation from the CLI
 ```
 
-## Struttura
+## Layout
 
-- `investment_tracker/app.py` — entry point: senza argomenti/`--demo`/`--port` avvia la dashboard, altrimenti CLI.
-- `investment_tracker/server.py` — `http.server` (solo stdlib): API JSON + file statici, sicurezza locale.
-- `investment_tracker/portfolio.py` — calcoli: quote per versamento, rendimento totale, XIRR, YoY (Modified Dietz).
-- `investment_tracker/market.py` — accesso a Yahoo (yfinance), cache 15 min, conversione valute, modalità demo.
-- `investment_tracker/storage.py` — modello dati (`Portfolio` → `Asset` → `Contribution`) e salvataggio JSON atomico.
-- `investment_tracker/core.py` — risoluzione ISIN→ticker e calcolo singolo usato dalla CLI.
-- `investment_tracker/web/` — `index.html`, `app.css`, `app.js` (vanilla JS, grafici SVG fatti a mano, tema chiaro/scuro).
-- `investment_tracker/gui.py` — vecchia GUI tkinter, dismessa (si può eliminare).
+- `investment_tracker/app.py` — entry point: no args / `--demo` / `--port` start the dashboard, otherwise the CLI.
+- `investment_tracker/server.py` — `http.server` (stdlib only): JSON API + static files, local security.
+  API: `GET /api/portfolio`, `GET /api/search`, `POST /api/assets`, `PUT|DELETE /api/assets/<id>`
+  (PUT accepts `name`, `ticker`, and the full `contributions` list), `POST /api/assets/<id>/contributions`,
+  `PUT|DELETE /api/assets/<id>/contributions/<cid>`.
+- `investment_tracker/portfolio.py` — calculations: shares per contribution, total return, XIRR, YoY (Modified Dietz).
+- `investment_tracker/market.py` — Yahoo access (yfinance), 15-minute cache, currency conversion, demo mode.
+- `investment_tracker/storage.py` — data model (`Portfolio` → `Asset` → `Contribution`) and atomic JSON saves.
+- `investment_tracker/core.py` — ISIN→ticker resolution and the one-off calculation used by the CLI.
+- `investment_tracker/web/` — `index.html`, `app.css`, `app.js` (vanilla JS, hand-made SVG charts, light/dark theme).
 
-## Convenzioni
+## Conventions
 
-- Codice, commenti, UI e messaggi d'errore in **italiano**.
-- Importi nella valuta base (EUR); i prezzi in valuta estera sono convertiti col cambio storico Yahoo (`USDEUR=X`, ecc.).
-  Le valute in centesimi (`GBp`, `ZAc`, `ILA`) sono divise per 100.
-- Nessuna dipendenza compilata nuova: su questa macchina AppLocker/WDAC blocca alcune DLL (per questo `numpy==2.1.3`).
-  Preferisci la libreria standard.
-- Frontend: niente framework né build step. Colori solo tramite le variabili CSS in `:root` (chiaro) e nei blocchi dark.
-- Dopo modifiche alla UI, verifica in modalità demo sia il tema chiaro sia quello scuro, e la larghezza mobile.
+- Code, comments, UI and error messages in **English**. Number/date formatting uses the `en-GB` locale.
+- Amounts are in the base currency (EUR); prices in foreign currencies are converted with Yahoo's historical
+  FX rate (`USDEUR=X`, etc.). Minor-unit currencies (`GBp`, `ZAc`, `ILA`) are divided by 100.
+- No new compiled dependencies: AppLocker/WDAC blocks some DLLs on this machine (hence `numpy==2.1.3`).
+  Prefer the standard library.
+- Frontend: no frameworks and no build step. Colors only via the CSS variables in `:root` (light) and the dark blocks.
+- After UI changes, check demo mode in both light and dark themes, and at mobile width.

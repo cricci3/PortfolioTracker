@@ -1,13 +1,13 @@
-"""Calcolo delle metriche di ogni asset e del portafoglio complessivo.
+"""Per-asset and whole-portfolio metrics.
 
-Convenzioni:
-- Gli importi versati sono nella valuta base del portafoglio (default EUR).
-- Le quote acquistate a ogni versamento = importo / prezzo (in valuta base) del primo
-  giorno di borsa >= data del versamento, oppure il prezzo reale indicato dall'utente.
-- Rendimento totale = (valore attuale - capitale versato) / capitale versato.
-- Rendimento annualizzato = XIRR (money-weighted), tiene conto di quando entrano i soldi.
-- YoY = risultato degli ultimi 12 mesi con il metodo Modified Dietz, così i versamenti
-  PAC dell'ultimo anno non vengono scambiati per guadagno.
+Conventions:
+- Contribution amounts are in the portfolio base currency (EUR by default).
+- Shares bought by each contribution = amount / price (in base currency) on the first
+  trading day >= the contribution date, or the actual price entered by the user.
+- Total return = (current value - invested capital) / invested capital.
+- Annualized return = XIRR (money-weighted): accounts for when the money went in.
+- YoY = result over the last 12 months using Modified Dietz, so contributions made
+  during the year (e.g. a monthly savings plan) are not mistaken for gains.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ def _downsample(s: pd.Series, max_points: int = MAX_POINTS) -> pd.Series:
 
 
 def xirr(cashflows: list[tuple[date, float]]) -> float | None:
-    """Tasso interno di rendimento annuo per flussi irregolari (bisezione robusta)."""
+    """Annual internal rate of return for irregular cash flows (robust bisection)."""
     if len(cashflows) < 2:
         return None
     t0 = min(d for d, _ in cashflows)
@@ -76,7 +76,7 @@ def compute_asset(asset: Asset, base: str, force: bool = False) -> dict:
     }
     contribs = sorted(asset.contributions, key=lambda c: c.date)
     if not contribs:
-        out["error"] = "Nessun versamento registrato."
+        out["error"] = "No contributions recorded."
         return out
 
     today = date.today()
@@ -86,11 +86,11 @@ def compute_asset(asset: Asset, base: str, force: bool = False) -> dict:
     try:
         price = market.price_in_base(asset.ticker, asset.currency, base, fetch_start, force)
         raw = market.close_history(asset.ticker, fetch_start, force)
-    except Exception as e:  # rete/dati: l'errore resta confinato a questo asset
+    except Exception as e:  # network/data errors stay confined to this asset
         out["error"] = str(e)
         return out
 
-    # fattore di conversione giornaliero valuta strumento -> base (per i prezzi manuali)
+    # daily conversion factor instrument currency -> base (for manually entered prices)
     conv = (price / raw.reindex(price.index)).ffill()
 
     shares_by_day = pd.Series(0.0, index=price.index)
@@ -101,7 +101,7 @@ def compute_asset(asset: Asset, base: str, force: bool = False) -> dict:
     for c in contribs:
         d = pd.Timestamp(c.date)
         after = price[price.index >= d]
-        if after.empty:  # versamento di oggi a mercato non ancora chiuso: ultimo prezzo
+        if after.empty:  # contribution dated today before the market closes: use last price
             exec_day, px = price.index[-1], float(price.iloc[-1])
         else:
             exec_day, px = after.index[0], float(after.iloc[0])
@@ -137,7 +137,7 @@ def compute_asset(asset: Asset, base: str, force: bool = False) -> dict:
     held_days = (last_day.date() - first).days
     irr = xirr(flows) if held_days >= MIN_DAYS_FOR_ANNUALIZED else None
 
-    # --- YoY (ultimi 12 mesi, Modified Dietz) ---------------------------------
+    # --- YoY (last 12 months, Modified Dietz) ---------------------------------
     yoy = None
     one_year_ago = last_day - pd.Timedelta(days=365)
     if pd.Timestamp(first) <= one_year_ago:
@@ -156,7 +156,7 @@ def compute_asset(asset: Asset, base: str, force: bool = False) -> dict:
             "contributed": net_in,
         }
 
-    # variazione del prezzo dello strumento a 12 mesi (indipendente dai versamenti)
+    # 12-month price change of the instrument itself (independent of contributions)
     p1y = _value_on(price, one_year_ago)
     instrument_12m = (last_price / p1y - 1) * 100 if p1y else None
     prev = float(price.iloc[-2]) if len(price) > 1 else last_price
@@ -205,7 +205,7 @@ def compute_portfolio(pf: Portfolio, force: bool = False) -> dict:
     value = sum(a["value"] for a in ok)
     gain = value - invested
 
-    # serie aggregata: somma dei valori per data (ffill sui giorni mancanti fra borse diverse)
+    # aggregate series: sum of values per date (ffill over days missing between exchanges)
     total = None
     if ok:
         vals = [a["_full_value"] for a in ok]
@@ -221,7 +221,7 @@ def compute_portfolio(pf: Portfolio, force: bool = False) -> dict:
             "invested": [round(float(x), 2) for x in i.values],
         }
 
-    # XIRR complessivo
+    # portfolio-wide XIRR
     flows = [
         (date.fromisoformat(c["date"]), -c["amount"]) for a in ok for c in a["contributions"]
     ]

@@ -1,11 +1,11 @@
-"""Accesso ai dati di mercato (Yahoo Finance) con cache in memoria.
+"""Market data access (Yahoo Finance) with an in-memory cache.
 
-L'unico traffico in uscita dell'app passa da qui: verso Yahoo vengono inviati SOLO
-i ticker (es. VWCE.DE) e le date di inizio storico. Importi, quote e valore del
-portafoglio non lasciano mai il computer.
+All of the app's outbound traffic goes through this module: Yahoo only ever receives
+tickers (e.g. VWCE.DE) and history start dates. Amounts, shares and portfolio value
+never leave the computer.
 
-Con INVESTMENT_TRACKER_DEMO=1 non si contatta Internet: i prezzi sono sintetici
-(utile per provare la UI o sviluppare senza dati reali).
+With INVESTMENT_TRACKER_DEMO=1 nothing is fetched from the Internet: prices are
+synthetic (useful to try the UI or develop without real data).
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from .core import NetworkError, NoDataError, TickerCandidate, search_ticker_by_i
 
 CACHE_TTL_SECONDS = 15 * 60
 
-# Valute quotate in "centesimi" su Yahoo: (valuta reale, divisore)
+# Currencies Yahoo quotes in minor units ("pence"): (real currency, divisor)
 MINOR_UNITS = {"GBp": ("GBP", 100.0), "GBX": ("GBP", 100.0), "ZAc": ("ZAR", 100.0), "ILA": ("ILS", 100.0)}
 
 
@@ -68,7 +68,7 @@ def _demo_series(ticker: str, start: date) -> pd.Series:
     seed = int(hashlib.md5(ticker.encode()).hexdigest()[:8], 16)
     rng_state = seed
     days = pd.bdate_range(start, date.today())
-    drift = ((seed % 13) - 3) / 100 / 252  # da -3% a +9% annuo
+    drift = ((seed % 13) - 3) / 100 / 252  # -3% to +9% a year
     vol = 0.006 + (seed % 7) / 1000
     price = 20 + seed % 180
     out = []
@@ -137,7 +137,7 @@ def instrument_meta(ticker: str) -> InstrumentMeta:
 
 
 def close_history(ticker: str, start: date, force: bool = False) -> pd.Series:
-    """Prezzi di chiusura giornalieri (indice = date naive) da `start` a oggi."""
+    """Daily closing prices (naive date index) from `start` to today."""
     ticker = ticker.strip().upper()
     if demo_mode():
         return _cached(("hist", ticker, start), lambda: _demo_series(ticker, start), force)
@@ -151,11 +151,11 @@ def close_history(ticker: str, start: date, force: bool = False) -> pd.Series:
             )
         except Exception as e:
             raise NetworkError(
-                f"Impossibile scaricare i prezzi di {ticker} da Yahoo Finance. "
-                f"Controlla la connessione. Dettaglio: {e}"
+                f"Could not download prices for {ticker} from Yahoo Finance. "
+                f"Check your connection. Details: {e}"
             ) from e
         if hist is None or hist.empty or "Close" not in hist:
-            raise NoDataError(f"Nessun prezzo trovato per '{ticker}' dal {start}.")
+            raise NoDataError(f"No prices found for '{ticker}' since {start}.")
         close = hist["Close"].dropna().sort_index()
         idx = pd.to_datetime(close.index)
         if getattr(idx, "tz", None) is not None:
@@ -163,14 +163,14 @@ def close_history(ticker: str, start: date, force: bool = False) -> pd.Series:
         close.index = idx.normalize()
         close = close[~close.index.duplicated(keep="last")]
         if close.empty:
-            raise NoDataError(f"Prezzi vuoti per '{ticker}'.")
+            raise NoDataError(f"Empty price data for '{ticker}'.")
         return close
 
     return _cached(("hist", ticker, start), load, force)
 
 
 def price_in_base(ticker: str, currency: str, base: str, start: date, force: bool = False) -> pd.Series:
-    """Serie prezzi convertita nella valuta base del portafoglio (cambio storico giornaliero)."""
+    """Price series converted to the portfolio base currency (daily historical FX rate)."""
     close = close_history(ticker, start, force)
     cur = currency or base
     if cur in MINOR_UNITS:

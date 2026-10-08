@@ -2,11 +2,11 @@
 __pycache__/
 *.pyc
 
-# Dati personali: non devono MAI finire nel repository
+# Personal data: must NEVER end up in the repository
 portfolio.json
 portfolio.json.tmp
 *.portfolio.json
 .investment-tracker-demo/
 
-# Impostazioni locali di Claude Code
+# Claude Code local settings
 .claude/settings.local.json
