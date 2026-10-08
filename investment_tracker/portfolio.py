@@ -97,6 +97,7 @@ def compute_asset(asset: Asset, base: str, force: bool = False) -> dict:
     invested_by_day = pd.Series(0.0, index=price.index)
     total_shares = total_invested = 0.0
     flows: list[tuple[date, float]] = []
+    executed: list[tuple[pd.Timestamp, float]] = []  # (execution day, amount) per contribution
 
     for c in contribs:
         d = pd.Timestamp(c.date)
@@ -113,6 +114,7 @@ def compute_asset(asset: Asset, base: str, force: bool = False) -> dict:
         shares_by_day.loc[shares_by_day.index >= exec_day] += sh
         invested_by_day.loc[invested_by_day.index >= exec_day] += c.amount
         flows.append((date.fromisoformat(c.date), -c.amount))
+        executed.append((exec_day, c.amount))
         out["contributions"].append(
             {
                 "id": c.id,
@@ -138,20 +140,25 @@ def compute_asset(asset: Asset, base: str, force: bool = False) -> dict:
     irr = xirr(flows) if held_days >= MIN_DAYS_FOR_ANNUALIZED else None
 
     # --- YoY (last 12 months, Modified Dietz) ---------------------------------
-    yoy = None
+    # Contributions are classified and weighted by their EXECUTION day, the same day
+    # their shares enter `value_series`. Using the entry date instead made a
+    # contribution dated on a weekend/holiday right at the 12-month boundary count
+    # as pure gain (it was in neither the start value nor the new money).
+    # The Dietz parts are always computed so the portfolio total can include assets
+    # younger than 12 months; the per-asset figure is only shown after a full year.
     one_year_ago = last_day - pd.Timedelta(days=365)
+    v0 = _value_on(value_series, one_year_ago) or 0.0
+    recent = [(d, amt) for d, amt in executed if d > one_year_ago]
+    net_in = sum(amt for _, amt in recent)
+    weighted = sum(amt * (last_day - d).days / 365 for d, amt in recent)
+    yoy_gain = value - v0 - net_in
+    yoy_base = v0 + weighted  # average capital at work over the period
+    out["_yoy_parts"] = (yoy_gain, yoy_base)
+    yoy = None
     if pd.Timestamp(first) <= one_year_ago:
-        v0 = _value_on(value_series, one_year_ago) or 0.0
-        recent = [c for c in contribs if pd.Timestamp(c.date) > one_year_ago]
-        net_in = sum(c.amount for c in recent)
-        weighted = sum(
-            c.amount * (last_day - pd.Timestamp(c.date)).days / 365 for c in recent
-        )
-        yoy_gain = value - v0 - net_in
-        denom = v0 + weighted
         yoy = {
             "gain": yoy_gain,
-            "pct": (yoy_gain / denom * 100) if denom > 0 else None,
+            "pct": (yoy_gain / yoy_base * 100) if yoy_base > 0 else None,
             "start_value": v0,
             "contributed": net_in,
         }
@@ -219,7 +226,17 @@ def compute_portfolio(pf: Portfolio, force: bool = False) -> dict:
             "dates": [d.date().isoformat() for d in v.index],
             "value": [round(float(x), 2) for x in v.values],
             "invested": [round(float(x), 2) for x in i.values],
+            "assets": [],
         }
+
+        # per-asset lines on the same dates as the total; null before the asset's first
+        # contribution so its line starts where the investment starts
+        def aligned(s: pd.Series) -> list[float | None]:
+            s = s.reindex(all_idx).ffill().reindex(v.index)
+            return [None if pd.isna(x) else round(float(x), 2) for x in s.values]
+
+        for a, sv, si in zip(ok, vals, invs):
+            total["assets"].append({"id": a["id"], "value": aligned(sv), "invested": aligned(si)})
 
     # portfolio-wide XIRR
     flows = [
@@ -231,15 +248,23 @@ def compute_portfolio(pf: Portfolio, force: bool = False) -> dict:
         if (last - min(d for d, _ in flows)).days >= MIN_DAYS_FOR_ANNUALIZED:
             irr = xirr(flows + [(last, value)])
 
-    yoy_assets = [a for a in ok if a.get("yoy")]
-    yoy_gain = sum(a["yoy"]["gain"] for a in yoy_assets) if yoy_assets else None
-    yoy_base = sum(
-        a["yoy"]["start_value"] + a["yoy"]["contributed"] / 2 for a in yoy_assets
-    )
+    # Portfolio YoY: sum the Modified Dietz parts of EVERY asset, including those bought
+    # within the last 12 months (their start value is simply 0), with the same time
+    # weighting used per asset. Previously young assets were left out entirely and new
+    # money was weighted as if it had always arrived mid-year.
+    yoy_gain = None
+    yoy_base = 0.0
+    if ok:
+        earliest = min(date.fromisoformat(a["first_date"]) for a in ok)
+        latest = max(date.fromisoformat(a["last_date"]) for a in ok)
+        if (latest - earliest).days >= 365:
+            yoy_gain = sum(a["_yoy_parts"][0] for a in ok)
+            yoy_base = sum(a["_yoy_parts"][1] for a in ok)
 
     for a in assets:
         a.pop("_full_value", None)
         a.pop("_full_invested", None)
+        a.pop("_yoy_parts", None)
 
     return {
         "base_currency": pf.base_currency,

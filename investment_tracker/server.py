@@ -38,13 +38,41 @@ class ApiError(Exception):
         self.status = status
 
 
+NUM_RE = re.compile(r"-?\d*\.?\d+")
+
+
+def parse_number(text: str, grouping: bool = False) -> float:
+    """Parse "1000.50", "1000,50", "1,000.50", "1.000,50" or "1.000.000".
+
+    Same rules as parseNum() in app.js. With both separators the last one is the decimal
+    mark. With only one kind, repeated means thousands; a single one followed by exactly
+    three digits ("1.000") means thousands when `grouping` is True (amounts). The old
+    code turned "1.000" into 1.0 and rejected "1.000,50".
+    """
+    s = re.sub(r"[\s€$£']", "", text)
+    if "," in s and "." in s:
+        dec = "," if s.rfind(",") > s.rfind(".") else "."
+        s = s.replace("." if dec == "," else ",", "").replace(",", ".")
+    elif "," in s or "." in s:
+        parts = s.split("," if "," in s else ".")
+        thousands = len(parts) > 2 or (
+            grouping and re.fullmatch(r"-?\d{1,3}", parts[0]) and re.fullmatch(r"\d{3}", parts[1])
+        )
+        s = "".join(parts) if thousands else ".".join(parts)
+    if not NUM_RE.fullmatch(s):
+        raise ValueError(text)
+    return float(s)
+
+
 def _num(value, field: str, required: bool = True) -> float | None:
     if value in (None, ""):
         if required:
             raise ApiError(400, f"'{field}' is required.")
         return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)  # already a number (the dashboard parses input client-side)
     try:
-        return float(str(value).replace(",", "."))
+        return parse_number(str(value), grouping=(field == "amount"))
     except ValueError:
         raise ApiError(400, f"'{value}' is not a valid number ({field}).") from None
 

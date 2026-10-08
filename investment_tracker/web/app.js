@@ -55,15 +55,26 @@
   const dateFmt = (iso) => { if (!iso) return "—"; const [y, m, d] = iso.split("-"); return `${d}/${m}/${y}`; };
   const monthFmt = (iso) => new Date(iso + "T00:00:00").toLocaleDateString(LOCALE, { month: "short", year: "2-digit" });
   const todayISO = () => { const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 10); };
-  // accepts "1000", "1,000.50", "1.000,50", "1000,5"
-  function parseNum(s) {
-    s = String(s ?? "").trim().replace(/[\s€$£]/g, "");
+  // Accepts "1000", "1000.50", "1000,50", "1,000.50", "1.000,50", "1.000.000".
+  // With both separators, the last one is the decimal mark. With only one kind:
+  // repeated ("1.000.000") means thousands; a single one followed by exactly three
+  // digits ("1.000", "2,500") means thousands when `grouping` is on (amounts), since
+  // amounts never carry three decimals. Unit prices keep it as a decimal ("1.234").
+  function parseNum(s, grouping = false) {
+    s = String(s ?? "").trim().replace(/[\s€$£']/g, "");
     if (s === "") return null;
-    const lastComma = s.lastIndexOf(","), lastDot = s.lastIndexOf(".");
-    if (lastComma > lastDot) s = s.replace(/\./g, "").replace(",", ".");
-    else s = s.replace(/,/g, "");
-    const n = Number(s);
-    return isNaN(n) ? NaN : n;
+    const hasComma = s.includes(","), hasDot = s.includes(".");
+    if (hasComma && hasDot) {
+      const dec = s.lastIndexOf(",") > s.lastIndexOf(".") ? "," : ".";
+      s = s.split(dec === "," ? "." : ",").join("").replace(",", ".");
+    } else if (hasComma || hasDot) {
+      const sep = hasComma ? "," : ".";
+      const parts = s.split(sep);
+      const thousands = parts.length > 2 || (grouping && /^-?\d{1,3}$/.test(parts[0]) && /^\d{3}$/.test(parts[1]));
+      s = thousands ? parts.join("") : parts.join(".");
+    }
+    if (!/^-?\d*\.?\d+$/.test(s)) return NaN;
+    return Number(s);
   }
   const plainNum = (v) => (v == null ? "" : String(Math.round(v * 1e6) / 1e6));
   const held = (days) => days >= 365 ? `${(days / 365).toLocaleString(LOCALE, { maximumFractionDigits: 1 })} years` : `${Math.max(days, 0)} days`;
@@ -95,7 +106,24 @@
     let i = series.dates.findIndex((d) => d >= from);
     if (i < 0) i = 0;
     if (series.dates.length - i < 2) i = Math.max(0, series.dates.length - 2);
-    return { dates: series.dates.slice(i), value: series.value.slice(i), invested: series.invested.slice(i) };
+    return {
+      dates: series.dates.slice(i), value: series.value.slice(i), invested: series.invested.slice(i),
+      assets: (series.assets || []).map((a) => ({ ...a, value: a.value.slice(i), invested: a.invested.slice(i) })),
+    };
+  }
+
+  // Asset colours: ranked by current value, shared by the allocation bar and the chart lines.
+  const ASSET_COLORS = ["--a1", "--a2", "--a3", "--a4", "--a5", "--a6"];
+  function assetColors(assets) {
+    const ranked = assets.filter((a) => !a.error && a.value > 0).sort((a, b) => b.value - a.value);
+    const map = {};
+    ranked.forEach((a, i) => { map[a.id] = `var(${ASSET_COLORS[i % ASSET_COLORS.length]})`; });
+    return map;
+  }
+
+  // Chart lines the user switched off ("total" or asset ids), remembered per browser.
+  function hiddenSeries() {
+    try { return new Set(JSON.parse(store("it-chart-hidden") || "[]")); } catch (e) { return new Set(); }
   }
 
   function niceTicks(min, max, count = 4) {
@@ -112,7 +140,9 @@
 
   /**
    * Draws an SVG chart of the value (line + area), with invested capital as a dashed step line.
-   * opts: { axes, interactive, color }
+   * opts: { axes, interactive, color, hideTotal, overlays }
+   *   overlays: [{ label, color, value: [], invested: [] }] extra per-asset lines on the
+   *   same dates (solid = value, dashed = invested; null = not held yet).
    */
   function drawChart(el, series, opts = {}) {
     el.innerHTML = "";
@@ -123,7 +153,15 @@
     const W = Math.max(el.clientWidth, 120), H = Math.max(el.clientHeight, 40);
     const pad = opts.axes ? { l: 52, r: 8, t: 10, b: 24 } : { l: 1, r: 1, t: 4, b: 2 };
     const n = series.dates.length;
-    const vals = series.value.concat(opts.axes ? series.invested : []);
+    const overlays = opts.overlays || [];
+    const showTotal = !opts.hideTotal;
+    let vals = showTotal ? series.value.concat(opts.axes ? series.invested : []) : [];
+    for (const o of overlays) vals = vals.concat(o.value, o.invested);
+    vals = vals.filter((v) => v != null);
+    if (!vals.length) {
+      el.innerHTML = `<div class="hint" style="padding:20px 0">All lines are switched off. Pick one below the title.</div>`;
+      return;
+    }
     let lo = Math.min(...vals), hi = Math.max(...vals);
     if (hi === lo) { hi += 1; lo -= 1; }
     const padY = (hi - lo) * (opts.axes ? 0.08 : 0.12);
@@ -134,13 +172,23 @@
     const color = opts.color || "var(--chart-value)";
     const gid = "g" + ++gradSeq;
 
-    const line = series.value.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join("");
+    // path through the points; `step` draws invested capital as steps; nulls leave a gap
+    const pathOf = (arr, step) => {
+      let d = "", open = false;
+      arr.forEach((v, i) => {
+        if (v == null) { open = false; return; }
+        const X = x(i).toFixed(1), Y = y(v).toFixed(1);
+        d += !open ? `M${X},${Y}` : step ? `H${X}V${Y}` : `L${X},${Y}`;
+        open = true;
+      });
+      return d;
+    };
+    const line = pathOf(series.value, false);
     const area = `${line}L${x(n - 1).toFixed(1)},${H - pad.b}L${x(0).toFixed(1)},${H - pad.b}Z`;
-    // invested capital as steps
-    let inv = "";
-    series.invested.forEach((v, i) => {
-      inv += i ? `H${x(i).toFixed(1)}V${y(v).toFixed(1)}` : `M${x(0).toFixed(1)},${y(v).toFixed(1)}`;
-    });
+    const inv = pathOf(series.invested, true);
+    const overlayPaths = overlays.map((o) =>
+      `<path class="line-asset-invested" d="${pathOf(o.invested, true)}" style="stroke:${o.color}"/>` +
+      `<path class="line-asset" d="${pathOf(o.value, false)}" style="stroke:${o.color}"/>`).join("");
 
     let axes = "";
     if (opts.axes) {
@@ -164,10 +212,11 @@
           <stop offset="1" style="stop-color:${color};stop-opacity:0"/>
         </linearGradient></defs>
         ${axes}
-        <path d="${area}" fill="url(#${gid})"/>
-        ${opts.axes ? `<path class="line-invested" d="${inv}"/>` : ""}
-        <path class="line-value" d="${line}" style="stroke:${color}"/>
-        ${opts.interactive ? `<g class="hover" style="display:none"><line class="cursor" y1="${pad.t}" y2="${H - pad.b}"/><circle class="cursor-dot" r="4" style="stroke:${color}"/></g>
+        ${showTotal ? `<path d="${area}" fill="url(#${gid})"/>` : ""}
+        ${overlayPaths}
+        ${showTotal && opts.axes ? `<path class="line-invested" d="${inv}"/>` : ""}
+        ${showTotal ? `<path class="line-value" d="${line}" style="stroke:${color}"/>` : ""}
+        ${opts.interactive ? `<g class="hover" style="display:none"><line class="cursor" y1="${pad.t}" y2="${H - pad.b}"/>${showTotal ? `<circle class="cursor-dot" r="4" style="stroke:${color}"/>` : ""}</g>
         <rect x="${pad.l}" y="0" width="${W - pad.l - pad.r}" height="${H}" fill="transparent"/>` : ""}
       </svg>`;
 
@@ -183,12 +232,19 @@
       const cx = x(i), v = series.value[i], iv = series.invested[i];
       g.style.display = "";
       g.querySelector("line").setAttribute("x1", cx); g.querySelector("line").setAttribute("x2", cx);
-      g.querySelector("circle").setAttribute("cx", cx); g.querySelector("circle").setAttribute("cy", y(v));
+      const dot = g.querySelector("circle");
+      if (dot) { dot.setAttribute("cx", cx); dot.setAttribute("cy", y(v)); }
       const gain = v - iv;
-      tip.innerHTML = `<div class="d">${dateFmt(series.dates[i])}</div>
+      const head = overlays.length ? `<div class="th">Total</div>` : "";
+      const totalRows = !showTotal ? "" : `${head}
         <div class="r"><span>Value</span><span>${money(v)}</span></div>
         <div class="r"><span>Invested</span><span>${money(iv)}</span></div>
         <div class="r"><span>Result</span><span class="${tone(gain)}">${signedMoney(gain)} · ${pct(iv ? (gain / iv) * 100 : 0)}</span></div>`;
+      const assetRows = overlays.filter((o) => o.value[i] != null).map((o) => {
+        const ov = o.value[i], oi = o.invested[i] || 0, og = ov - oi;
+        return `<div class="r ra"><span><i style="background:${o.color}"></i><span class="nm">${esc(o.label)}</span></span><span>${money(ov, 0)} <em>/ ${money(oi, 0)}</em> <b class="${tone(og)}">${pct(oi ? (og / oi) * 100 : 0)}</b></span></div>`;
+      }).join("");
+      tip.innerHTML = `<div class="d">${dateFmt(series.dates[i])}</div>${totalRows}${assetRows ? `<div class="th">Value / invested</div>${assetRows}` : ""}`;
       tip.style.display = "block";
       const left = (cx / W) * r.width;
       tip.style.left = Math.min(Math.max(left + 14, 0), r.width - tip.offsetWidth) + "px";
@@ -221,17 +277,41 @@
     if (!d.series || d.series.dates.length < 2) { box.hidden = true; return; }
     box.hidden = false;
     $$("#range button").forEach((b) => b.classList.toggle("on", Number(b.dataset.range) === state.range));
-    drawChart($("#main-chart"), sliceRange(d.series, state.range), { axes: true, interactive: true });
 
     const ok = d.assets.filter((a) => !a.error && a.value > 0).sort((a, b) => b.value - a.value);
+    const colorOf = assetColors(d.assets);
+    renderChartLines(ok, colorOf);
+
     const total = ok.reduce((s, a) => s + a.value, 0);
     if (ok.length < 2) { $("#alloc").hidden = true; return; }
     $("#alloc").hidden = false;
-    const colors = ["--a1", "--a2", "--a3", "--a4", "--a5", "--a6"];
-    const col = (i) => `var(${colors[i % colors.length]})`;
     $("#alloc").innerHTML = `
-      <div class="alloc-bar">${ok.map((a, i) => `<i style="width:${(a.value / total) * 100}%;background:${col(i)}" title="${esc(a.ticker)}"></i>`).join("")}</div>
-      <div class="alloc-legend">${ok.map((a, i) => `<span><i style="background:${col(i)}"></i>${esc(shortName(a))} <b>${((a.value / total) * 100).toLocaleString(LOCALE, { maximumFractionDigits: 1 })}%</b></span>`).join("")}</div>`;
+      <div class="alloc-bar">${ok.map((a) => `<i style="width:${(a.value / total) * 100}%;background:${colorOf[a.id]}" title="${esc(a.ticker)}"></i>`).join("")}</div>
+      <div class="alloc-legend">${ok.map((a) => `<span><i style="background:${colorOf[a.id]}"></i>${esc(shortName(a))} <b>${((a.value / total) * 100).toLocaleString(LOCALE, { maximumFractionDigits: 1 })}%</b></span>`).join("")}</div>`;
+  }
+
+  // Main chart: total value/invested plus one value/invested pair per asset, each
+  // switchable from the toggle row (with a single asset the pair would just repeat the total).
+  function renderChartLines(ok, colorOf) {
+    const d = state.data;
+    const series = sliceRange(d.series, state.range);
+    const hidden = hiddenSeries();
+    const perAsset = ok.length >= 2;
+    const byId = Object.fromEntries((series.assets || []).map((s) => [s.id, s]));
+    const overlays = !perAsset ? [] : ok
+      .filter((a) => byId[a.id] && !hidden.has(a.id))
+      .map((a) => ({ label: shortName(a), color: colorOf[a.id], value: byId[a.id].value, invested: byId[a.id].invested }));
+
+    const row = $("#series-toggles");
+    row.hidden = !perAsset;
+    if (perAsset) {
+      const chip = (id, label, color) =>
+        `<button type="button" class="series-chip" data-id="${esc(id)}" aria-pressed="${!hidden.has(id)}"><i style="background:${color}"></i>${esc(label)}</button>`;
+      row.innerHTML = chip("total", "Total", "var(--chart-total)") + ok.map((a) => chip(a.id, shortName(a), colorOf[a.id])).join("");
+    }
+    drawChart($("#main-chart"), series, { axes: true, interactive: true, hideTotal: perAsset && hidden.has("total"), overlays,
+      // with asset lines on show, the total gets its own neutral colour (asset #1 is green too)
+      color: perAsset ? "var(--chart-total)" : undefined });
   }
 
   const shortName = (a) => (a.name && a.name !== a.ticker ? a.name.replace(/\s+(UCITS ETF|ETF|Inc\.?|S\.p\.A\.?|plc|N\.V\.|AG|SE)\b.*$/i, "") : a.ticker);
@@ -406,7 +486,7 @@
     if (!state.picked) return;
     const err = $("#add-error");
     err.hidden = true;
-    const amount = parseNum($("#add-amount").value), price = parseNum($("#add-price").value);
+    const amount = parseNum($("#add-amount").value, true), price = parseNum($("#add-price").value);
     if (!amount || amount <= 0) { err.textContent = "Enter a valid amount."; err.hidden = false; return; }
     if (Number.isNaN(price)) { err.textContent = "The unit price is not a valid number."; err.hidden = false; return; }
     const btn = $("#add-save");
@@ -454,7 +534,7 @@
     ev.preventDefault();
     const err = $("#cap-error");
     err.hidden = true;
-    const amount = parseNum($("#cap-amount").value), price = parseNum($("#cap-price").value);
+    const amount = parseNum($("#cap-amount").value, true), price = parseNum($("#cap-price").value);
     if (!amount || amount <= 0) { err.textContent = "Enter a valid amount."; err.hidden = false; return; }
     if (Number.isNaN(price)) { err.textContent = "The unit price is not a valid number."; err.hidden = false; return; }
     try {
@@ -533,7 +613,7 @@
     for (const row of $$(".edit-row:not(.head)", $("#edit-rows"))) {
       const f = (n) => row.querySelector(`[name="${n}"]`);
       [f("date"), f("amount"), f("price")].forEach((i) => i.classList.remove("invalid"));
-      const amount = parseNum(f("amount").value), price = parseNum(f("price").value);
+      const amount = parseNum(f("amount").value, true), price = parseNum(f("price").value);
       if (!f("date").value || f("date").value > todayISO()) { f("date").classList.add("invalid"); bad = true; }
       if (!amount || amount <= 0) { f("amount").classList.add("invalid"); bad = true; }
       if (Number.isNaN(price) || (price != null && price <= 0)) { f("price").classList.add("invalid"); bad = true; }
@@ -677,6 +757,14 @@
     const b = e.target.closest("button[data-range]");
     if (!b) return;
     state.range = Number(b.dataset.range);
+    renderOverview();
+  });
+  $("#series-toggles").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-id]");
+    if (!b) return;
+    const hidden = hiddenSeries();
+    hidden.has(b.dataset.id) ? hidden.delete(b.dataset.id) : hidden.add(b.dataset.id);
+    store("it-chart-hidden", JSON.stringify([...hidden]));
     renderOverview();
   });
   $("#grid").addEventListener("click", (e) => {
