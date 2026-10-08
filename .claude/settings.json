@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "deny": [
+      "Read(~/AppData/Roaming/InvestmentTracker/**)",
+      "Edit(~/AppData/Roaming/InvestmentTracker/**)",
+      "Read(~/.investment-tracker-demo/**)",
+      "Read(**/portfolio.json)",
+      "Edit(**/portfolio.json)",
+      "Read(**/portfolio.json.tmp)",
+      "Bash(*InvestmentTracker*)",
+      "Bash(*portfolio.json*)",
+      "Bash(*INVESTMENT_TRACKER_DATA_DIR*)",
+      "Bash(*APPDATA*)",
+      "PowerShell(*InvestmentTracker*)",
+      "PowerShell(*portfolio.json*)",
+      "PowerShell(*INVESTMENT_TRACKER_DATA_DIR*)",
+      "PowerShell(*APPDATA*)",
+      "WebFetch(domain:127.0.0.1)",
+      "WebFetch(domain:localhost)"
+    ]
+  }
+}
