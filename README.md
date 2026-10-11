@@ -5,6 +5,10 @@ using Yahoo Finance prices. For each asset you record a start date and an amount
 add later contributions (e.g. a monthly savings plan). The dashboard computes current
 value, gain in € and %, annualized return and the result over the last 12 months.
 
+![Dashboard in demo mode](docs/screenshot.png)
+
+*The dashboard in `--demo` mode (synthetic prices and sample assets).*
+
 ## Running it
 
 ```bash
